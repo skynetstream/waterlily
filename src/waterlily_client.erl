@@ -3,21 +3,24 @@
 -behaviour(gen_fsm).
 
 %% API
--export([start_link/0]).
+-export([ start_link/0
+        , send/1
+        ]).
 
 %% gen_fsm callbacks
--export([init/1,
-         disconnected/2,
-         disconnected/3,
-         connected/2,
-         connected/3,
-         ready/2,
-         ready/3,
-         handle_event/3,
-         handle_sync_event/4,
-         handle_info/3,
-         terminate/3,
-         code_change/4]).
+-export([ init/1
+        , disconnected/2
+        , disconnected/3
+        , connected/2
+        , connected/3
+        , ready/2
+        , ready/3
+        , handle_event/3
+        , handle_sync_event/4
+        , handle_info/3
+        , terminate/3
+        , code_change/4
+        ]).
 
 -include("waterlily.hrl").
 
@@ -38,6 +41,10 @@
 
 start_link() ->
     gen_fsm:start_link({local, ?MODULE}, ?MODULE, [], []).
+
+send(Message) ->
+    gen_fsm:send_event(?MODULE, {send, Message}).
+
 
 %%%===================================================================
 %%% gen_fsm callbacks
@@ -71,12 +78,16 @@ connected(_Event, _From, State) ->
     Reply = ok,
     {reply, Reply, connected, State}.
 
+ready({send, Message}, #state{socket=Socket} = State) ->
+    send_message(Socket, Message),
+    {next_state, ready, State};
+
 ready(_Event, State) ->
-    {next_state, disconnected, State}.
+    {next_state, ready, State}.
 
 ready(_Event, _From, State) ->
     Reply = ok,
-    {reply, Reply, disconnected, State}.
+    {reply, Reply, ready, State}.
 
 handle_event(Event, StateName, State) ->
     ?DEBUG("Got some event ~p~n", [Event]),
@@ -128,10 +139,11 @@ handle_info({tcp, _Port, Info}, connected, #state{socket=Socket}=State) ->
     end,
     {next_state, Next, S1};
 
-handle_info({tcp, _Port, Info}, StateName, #state{socket=Socket} = State) ->
+handle_info({tcp, _Port, Info}, StateName, State) ->
     S1 = case waterlily_codec:decode(Info) of
         {final, Data, Rest} ->
-            ?DEBUG("Got some info ~p in '~p'state.~n", [Data, StateName]),
+            D = waterlily_response:decode(Data),
+            ?DEBUG("Got some info: ~n~p~n", [D]),
             % response & = charAt(0)
             State#state{data=Rest};
         {wait, M} ->
