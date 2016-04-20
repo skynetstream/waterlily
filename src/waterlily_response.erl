@@ -4,12 +4,12 @@
 
 -include("waterlily.hrl").
 
--define(REDIRECT,       <<"^">>).
--define(ERROR,          <<"!">>).
--define(PROMPT,         <<"">>).
--define(QUERY,          <<"&">>).
--define(SCHEMA_HEADER,  <<"%">>).
--define(ASYNC_REPLY,    <<"_">>).
+-define(REDIRECT,       "^").
+-define(ERROR,          "!").
+-define(PROMPT,         "").
+-define(QUERY,          "&").
+-define(SCHEMA_HEADER,  "%").
+-define(ASYNC_REPLY,    "_").
 
 -define(TABLE,          1).
 -define(UPDATE,         2).
@@ -33,20 +33,55 @@
 % CREATE -comes empty
 % TRANSACTION - as update
 % BLOCK - continuation for prev query
-decode(<<"&">>) ->
-    <<>>;
-decode(<<"&", _/binary>> = Response) ->
-    [Header, TableNames, ColumnNames, ColumnTypes, ColumnLengts | Rows] =
-        binary:split(Response, [<<$\n>>], [global]),
-        ?DEBUG("ColumnTypes ~p~n", [ColumnTypes]),
-        ?DEBUG("Rows ~p~n", [Rows]),
-        ColumnTypes1 = column_types(ColumnTypes),
-        Rows1 = decode_rows(lists:droplast(Rows)),
-        Rows2 = type_rows(Rows1, ColumnTypes1),
-        Rows2;
 
-decode(Response) ->
-    Response.
+decode(<<?REDIRECT, Redirect/binary>>) ->
+    {redirect, Redirect};
+decode(<<?ERROR, Error/binary>>) ->
+    ?ERROR(Error),
+    {error, Error};
+decode(<<?PROMPT>>) ->
+    prompt;
+decode(<<?QUERY, _/binary>> = Response) ->
+    [Header | Lines] = binary:split(Response, [<<$\n>>], [global]),
+    Header1 = decode_header(Header),
+    decode_query(Header1, Lines);
+decode(<<?SCHEMA_HEADER, Rest/binary>>) ->
+    [_First, Content | _Ignore] = binary:split(Rest, [<<" ">>], [global]),
+    Schema = binary:split(Content, [<<",\t">>], [global]),
+    {schema, Schema};
+decode(<<?ASYNC_REPLY, Rest/binary>>) ->
+    {async_reply, Rest}.
+
+
+decode_header(<<?QUERY, Rest/binary>>) ->
+    Values = binary:split(Rest, [<<" ">>], [global]),
+    [binary_to_integer(V) || V <- Values].
+
+
+decode_query([?TABLE|_]=Header, Lines) ->
+    decode_table(Header, Lines);
+decode_query([?UPDATE, Id, _Rows, _Cols, _Index], _Lines) ->
+    {update, Id};
+decode_query([?CREATE, Id, _Rows, _Cols, _Index], _Lines) ->
+    {create, Id};
+decode_query([?TRANSACTION|_], _Lines) ->
+    transaction;
+decode_query([?PREPARE|_]=Header, Lines) ->
+    decode_table(Header, Lines);
+decode_query([?BLOCK, Id, _Rows, _Cols, _Index], Lines) ->
+    {block, Id, Lines}.
+
+
+decode_table([_, Id, NRows, NCols, Index], Lines) ->
+    [TableNames, ColumnNames, ColumnTypes, ColumnLengths | Rows] = Lines,
+    ?INFO("TableNames ~p~n", [decode(TableNames)]),
+    ?INFO("ColumnNames ~p~n", [decode(ColumnNames)]),
+    ?INFO("ColumnTypes ~p~n", [decode(ColumnTypes)]),
+    ?INFO("ColumnLengths ~p~n", [decode(ColumnLengths)]),
+    ColumnTypes1 = column_types(ColumnTypes),
+    Rows1 = decode_rows(lists:droplast(Rows)),
+    Rows2 = type_rows(Rows1, ColumnTypes1),
+    {result, {ColumnTypes, ColumnTypes1, Rows2}}.
 
 
 column_types(ColumnTypes) ->
@@ -66,6 +101,7 @@ to_atom(<<"double">>) -> float;
 to_atom(<<"decimal">>) -> float;
 to_atom(_) -> binary.
 
+
 decode_rows(Rows) ->
     decode_rows(Rows, []).
 
@@ -84,7 +120,6 @@ parse_row(Row) ->
 
 parse_row(<<>>, _Token, Result, _State) ->
     lists:reverse(Result);
-
 parse_row(<<"\t", Rest/binary>>, Token, Result, in_crap) ->
     parse_row(Rest, Token, Result, in_crap);
 parse_row(<<",", Rest/binary>>, Token, Result, in_crap) ->
