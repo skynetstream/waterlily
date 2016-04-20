@@ -131,7 +131,7 @@ handle_info({tcp, _Port, Info}, connected, #state{socket=Socket}=State) ->
             % {SHA512}hexhash
             % language (sql)
             % dbname (todo)
-            Response = <<"LIT:monetdb:{SHA512}", BinHexHash/binary, ":sql:todo:">>,
+            Response = <<"LIT:monetdb:{SHA512}", BinHexHash/binary, ":sql:voc:">>,
             send_message(Socket, Response),
             {connected, State#state{data=Rest}};
         {wait, M} ->
