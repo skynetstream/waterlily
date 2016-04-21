@@ -18,22 +18,25 @@
 -define(PREPARE,        5).
 -define(BLOCK,          6).
 
+-type id() :: non_neg_integer().
+-type atom_col_type() :: atom() | binary().
+-type col_info() :: map().
+-type query_result() :: {result, {[col_info()], [atom_col_type()], [any()]}}.
+-type query_response() :: query_result()
+                        | {update, id()}
+                        | {create, id()}
+                        | transaction
+                        | {block, id(), binary()}.
 
-% all of this needs to be handled correctly (and tested)
-% Redirect - ignore
-% error, log
-% prompt, ok, empty response
-% query, parse resposne
-% schema header, decide later
-% async_reply, TODO find out what is it
-%
-% header
-% TABLE or PREPARE - parse response
-% UPDATE - comes empty
-% CREATE -comes empty
-% TRANSACTION - as update
-% BLOCK - continuation for prev query
+-type response() :: {redirect, binary()}
+                  | {error, binary()}
+                  | prompt
+                  | {schema, binary(), [binary()]}
+                  | {async_reply, binary()}
+                  | query_response().
 
+
+-spec decode(binary()) -> response().
 decode(<<?REDIRECT, Redirect/binary>>) ->
     {redirect, Redirect};
 decode(<<?ERROR, Error/binary>>) ->
@@ -46,18 +49,20 @@ decode(<<?QUERY, _/binary>> = Response) ->
     Header1 = decode_header(Header),
     decode_query(Header1, Lines);
 decode(<<?SCHEMA_HEADER, Rest/binary>>) ->
-    [_First, Content | _Ignore] = binary:split(Rest, [<<" ">>], [global]),
+    [_First, Content, <<"#">>, Name | _Ignore] = binary:split(Rest, [<<" ">>], [global]),
     Schema = binary:split(Content, [<<",\t">>], [global]),
-    {schema, Schema};
+    {schema, Name, Schema};
 decode(<<?ASYNC_REPLY, Rest/binary>>) ->
     {async_reply, Rest}.
 
 
+-spec decode_header(binary()) -> [non_neg_integer()].
 decode_header(<<?QUERY, Rest/binary>>) ->
     Values = binary:split(Rest, [<<" ">>], [global]),
     [binary_to_integer(V) || V <- Values].
 
 
+-spec decode_query([non_neg_integer()], [binary()]) -> query_response().
 decode_query([?TABLE|_]=Header, Lines) ->
     decode_table(Header, Lines);
 decode_query([?UPDATE, Id, _Rows, _Cols, _Index], _Lines) ->
@@ -72,24 +77,36 @@ decode_query([?BLOCK, Id, _Rows, _Cols, _Index], Lines) ->
     {block, Id, Lines}.
 
 
+-spec decode_table([non_neg_integer()], [binary()]) -> query_result().
 decode_table([_, Id, NRows, NCols, Index], Lines) ->
     [TableNames, ColumnNames, ColumnTypes, ColumnLengths | Rows] = Lines,
-    ?INFO("TableNames ~p~n", [decode(TableNames)]),
-    ?INFO("ColumnNames ~p~n", [decode(ColumnNames)]),
-    ?INFO("ColumnTypes ~p~n", [decode(ColumnTypes)]),
-    ?INFO("ColumnLengths ~p~n", [decode(ColumnLengths)]),
-    ColumnTypes1 = column_types(ColumnTypes),
+    ColInfos = columns_info(TableNames, ColumnNames, ColumnTypes,
+                            ColumnLengths),
+    {schema, <<"type">>, ColumnTypes1} = decode(ColumnTypes),
+    AtomColumnTypes = [to_atom(C) || C <- ColumnTypes1],
     Rows1 = decode_rows(lists:droplast(Rows)),
-    Rows2 = type_rows(Rows1, ColumnTypes1),
-    {result, {ColumnTypes, ColumnTypes1, Rows2}}.
+    Rows2 = type_rows(Rows1, AtomColumnTypes),
+    {result, {ColInfos, AtomColumnTypes, Rows2}}.
 
+columns_info(TableNames, ColumnNames, ColumnTypes, ColumnLengths) ->
+    {TN_Info, TNs} = schema_info(TableNames),
+    ?INFO("TableNames ~p~n", [TNs]),
+    {CN_Info, CNs} = schema_info(ColumnNames),
+    ?INFO("ColumnNames ~p~n", [CNs]),
+    {CT_Info, CTs} = schema_info(ColumnTypes),
+    ?INFO("ColumnTypes ~p~n", [CTs]),
+    {CL_Info, CLs} = schema_info(ColumnLengths),
+    ?INFO("ColumnLengths ~p~n", [CLs]),
+    columns_info({TN_Info, CN_Info, CT_Info, CL_Info}, TNs, CNs, CTs, CLs, []).
 
-column_types(ColumnTypes) ->
-    [_, ColumnTypes1 | _] = binary:split(ColumnTypes, [<<" ">>], [global]),
-    CT = binary:split(ColumnTypes1, [<<",\t">>], [global]),
-    [to_atom(C) || C <- CT].
+columns_info(_, [], [], [], [], Result) ->
+    lists:reverse(Result);
+columns_info({TName, CName, CType, CLength}=Keys, 
+              [TN|TNs], [CN|CNs], [CT|CTs], [CL|CLs], Res) ->
+    ColumnInfo = #{TName => TN, CName => CN, CType => CT, CLength => CL},
+    columns_info(Keys, TNs, CNs, CTs, CLs, [ColumnInfo | Res]).
 
-
+-spec to_atom(binary()) -> atom().
 to_atom(<<"boolean">>) -> boolean;
 to_atom(<<"tinyint">>) -> int;
 to_atom(<<"smallint">>) -> int;
@@ -102,22 +119,25 @@ to_atom(<<"decimal">>) -> float;
 to_atom(_) -> binary.
 
 
+-spec decode_rows([binary()]) -> [[string()]].
 decode_rows(Rows) ->
     decode_rows(Rows, []).
 
+-spec decode_rows([binary()], [[any()]]) -> [[string()]].
 decode_rows([],Decoded) ->
     lists:reverse(Decoded);
 decode_rows([<<"[ ", Row/binary>> |Rows], Decoded) ->
     RS = size(Row) - 1,
     <<Row1:RS/binary, _Rest/binary>> = Row,
-    ?DEBUG("Going for ~p~n", [Row1]),
     Row2 = parse_row(Row1),
-    ?DEBUG("Haz ~p~n", [Row2]),
     decode_rows(Rows, [Row2 | Decoded]).
 
+
+-spec parse_row(binary()) -> [string()].
 parse_row(Row) ->
     parse_row(Row, [], [], in_crap).
 
+-spec parse_row(binary(), string(), [string()], atom()) -> [string()].
 parse_row(<<>>, _Token, Result, _State) ->
     lists:reverse(Result);
 parse_row(<<"\t", Rest/binary>>, Token, Result, in_crap) ->
@@ -155,8 +175,6 @@ parse_row(<<C:8, Rest/binary>>, Token, Result, escaped) ->
     parse_row(Rest, [C | Token], Result, in_quotes).
 
 
-
-
 type_rows(Rows, ColumnTypes) ->
     type_rows(Rows, ColumnTypes, []).
 
@@ -185,19 +203,6 @@ type(R, float) ->
 type(R, binary) ->
     R.
 
-% <<"sSELECT * FROM todo;">>
-% type, query_id, rows, cols, index
-% <<"&1 5 1 3 1\n% sys.todo,\tsys.todo,\tsys.todo # table_name\n% id,\tdescription,\tdone # name\n% int,\tvarchar,\tboolean # type\n% 1,\t15,\t5 # length\n[ 1,\t\"zrobic porzadek\",\tfalse\t]\n">>
-
-
-
-% <<"sSELECT * FROM todo;">>
-
-% <<"&1 6 1 3 1\n% sys.todo,\tsys.todo,\tsys.todo # table_name\n% id,\tdescription,\tdone # name\n% int,\tvarchar,\tboolean # type\n% 1,\t15,\t5 # length\n[ 1,\t\"zrobic porzadek\",\tfalse\t]\n">>
-
-
-
-% <<"sSELECT * FROM todo;">>
-
-% <<"&1 7 1 3 1\n% sys.todo,\tsys.todo,\tsys.todo # table_name\n% id,\tdescription,\tdone # name\n% int,\tvarchar,\tboolean # type\n% 1,\t15,\t5 # length\n[ 1,\t\"zrobic porzadek\",\tfalse\t]\n">>
-
+schema_info(Schema) ->
+    {schema, Name, Info} = decode(Schema),
+    {Name, Info}.
