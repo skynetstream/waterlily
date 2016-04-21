@@ -19,9 +19,9 @@
 -define(BLOCK,          6).
 
 -type id() :: non_neg_integer().
--type atom_col_type() :: atom() | binary().
+-type header() :: map().
 -type col_info() :: map().
--type query_result() :: {result, {[col_info()], [atom_col_type()], [any()]}}.
+-type query_result() :: {result, {header(), [col_info()], [any()]}}.
 -type query_response() :: query_result()
                         | {update, id()}
                         | {create, id()}
@@ -33,6 +33,7 @@
                   | prompt
                   | {schema, binary(), [binary()]}
                   | {async_reply, binary()}
+                  | {unknown, binary()}
                   | query_response().
 
 
@@ -53,7 +54,9 @@ decode(<<?SCHEMA_HEADER, Rest/binary>>) ->
     Schema = binary:split(Content, [<<",\t">>], [global]),
     {schema, Name, Schema};
 decode(<<?ASYNC_REPLY, Rest/binary>>) ->
-    {async_reply, Rest}.
+    {async_reply, Rest};
+decode(Unknown) ->
+    {unknown, Unknown}.
 
 
 -spec decode_header(binary()) -> [non_neg_integer()].
@@ -82,11 +85,12 @@ decode_table([_, Id, NRows, NCols, Index], Lines) ->
     [TableNames, ColumnNames, ColumnTypes, ColumnLengths | Rows] = Lines,
     ColInfos = columns_info(TableNames, ColumnNames, ColumnTypes,
                             ColumnLengths),
+    Header = #{id => Id, rows => NRows, cols => NCols, index => Index},
     {schema, <<"type">>, ColumnTypes1} = decode(ColumnTypes),
     AtomColumnTypes = [to_atom(C) || C <- ColumnTypes1],
     Rows1 = decode_rows(lists:droplast(Rows)),
     Rows2 = type_rows(Rows1, AtomColumnTypes),
-    {result, {ColInfos, AtomColumnTypes, Rows2}}.
+    {result, {Header, ColInfos, Rows2}}.
 
 columns_info(TableNames, ColumnNames, ColumnTypes, ColumnLengths) ->
     {TN_Info, TNs} = schema_info(TableNames),

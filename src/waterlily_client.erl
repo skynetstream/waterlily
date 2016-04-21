@@ -101,39 +101,41 @@ handle_info({tcp_closed, _Port}, _StateName, State) ->
     {next_state, disconnected, State};
 
 handle_info({tcp, _Port, Info}, connected, #state{socket=Socket}=State) ->
-    ?DEBUG("~p~n", [Info]),
     {Next, S1} = case waterlily_codec:decode(Info) of
-        {final, <<"!", _Error/binary>> = Data, Rest} ->
-            ?ERROR("Got some error ~p~n", [Data]),
-            {disconnected, State#state{data=Rest}};
-        {final, <<"^", _Redirect/binary>> = Data, Rest} ->
-            ?DEBUG("Got some redirect ~p~n", [Data]),
-            {connected, State#state{data=Rest}};
-        {final, <<"">>, Rest} ->
-            ?INFO("Let's roll~n"),
-            send_message(Socket, <<"Xreply_size -1">>),
-            send_message(Socket, <<"Xauto_commit 1">>),
-            send_message(Socket, <<"sSELECT 42;">>),
-            {ready, State#state{data=Rest}};
         {final, Data, Rest} ->
-            % dbname = merovingian
-            [Salt, DBname | _Other] = binary:split( Data, [<<":">>], [global]),
+            case waterlily_response:decode(Data) of
+                {error, _Error} ->
+                    {disconnected, State#state{data=Rest}};
+                {redirect, Redirect} ->
+                    ?INFO("Redirect ~p~n", [Redirect]),
+                    {connected, State#state{data=Rest}};
+                prompt ->
+                    send_message(Socket, <<"Xreply_size -1">>),
+                    send_message(Socket, <<"Xauto_commit 1">>),
+                    send_message(Socket, <<"sSELECT 42;">>),
+                    {ready, State#state{data=Rest}};
+                {unknown, Data} ->
+                    [Salt, DBname | _Other] = 
+                        binary:split( Data, [<<":">>], [global]),
 
-            ?DEBUG("Got some dbname ~p~n", [DBname]),
-            ?DEBUG("Got some salt ~p~n", [Salt]),
+                    ?DEBUG("Got some dbname ~p~n", [DBname]),
+                    ?DEBUG("Got some salt ~p~n", [Salt]),
 
-            Password = "monetdb",
-            Hash = crypto:hash(sha512, [bin_to_hex(crypto:hash(sha512, Password)), Salt]),
-            BinHexHash = bin_to_hex(Hash),
-            % Format:
-            % LIT
-            % user
-            % {SHA512}hexhash
-            % language (sql)
-            % dbname (todo)
-            Response = <<"LIT:monetdb:{SHA512}", BinHexHash/binary, ":sql:voc:">>,
-            send_message(Socket, Response),
-            {connected, State#state{data=Rest}};
+                    Password = "monetdb",
+                    Hash = crypto:hash(sha512,
+                        [bin_to_hex(crypto:hash(sha512, Password)), Salt]),
+                    BinHexHash = bin_to_hex(Hash),
+                    % Format:
+                    % LIT
+                    % user
+                    % {SHA512}hexhash
+                    % language (sql)
+                    % dbname (todo)
+                    Response = <<"LIT:monetdb:{SHA512}",
+                                 BinHexHash/binary, ":sql:voc:">>,
+                    send_message(Socket, Response),
+                    {connected, State#state{data=Rest}}
+            end;
         {wait, M} ->
             {connected, State#state{message=M}}
     end,
