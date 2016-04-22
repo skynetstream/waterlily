@@ -31,9 +31,10 @@
             , keepalive = true   :: boolean()
             , message            :: #message{}
             , data               :: binary()
+            , caller             :: pid()
             }).
 
--define(TCP_OPTS, [binary, {active, true}, {packet, raw}]).
+-define(TCP_OPTS, [binary, {active, false}, {packet, raw}]).
 
 %%%===================================================================
 %%% API
@@ -43,7 +44,8 @@ start_link() ->
     gen_fsm:start_link({local, ?MODULE}, ?MODULE, [], []).
 
 send(Message) ->
-    gen_fsm:send_event(?MODULE, {send, Message}).
+    Self = self(),
+    gen_fsm:send_event(?MODULE, {send, Self, Message}).
 
 
 %%%===================================================================
@@ -56,7 +58,8 @@ init(_Opts) ->
     case gen_tcp:connect(Host, Port, [{keepalive, Keepalive} | ?TCP_OPTS]) of
         {ok, Socket} ->
             ?INFO("Connected to ~p:~p", [Host, Port]),
-            State2 = State#state{socket = Socket},
+            ok = inet:setopts(Socket, [{active, once}]),
+            State2 = State#state{socket = Socket, caller=self()},
             {ok, connected, State2};
         {error, Reason} = Error ->
             ?ERROR("Cannot connect to ~p:~p: ~s", [Host, Port, Reason]),
@@ -78,9 +81,9 @@ connected(_Event, _From, State) ->
     Reply = ok,
     {reply, Reply, connected, State}.
 
-ready({send, Message}, #state{socket=Socket} = State) ->
+ready({send, From, Message}, #state{socket=Socket} = State) ->
     send_message(Socket, Message),
-    {next_state, ready, State};
+    {next_state, ready, State#state{caller=From}};
 
 ready(_Event, State) ->
     {next_state, ready, State}.
@@ -97,26 +100,32 @@ handle_sync_event(Event, _From, StateName, State) ->
     ?DEBUG("Got some event ~p~n", [Event]),
     {reply, ok, StateName, State}.
 
-handle_info({tcp_closed, _Port}, _StateName, State) ->
+handle_info({tcp_closed, Socket}, _StateName, #state{socket=Socket} = State) ->
     {next_state, disconnected, State};
 
-handle_info({tcp, _Port, Info}, connected, #state{socket=Socket}=State) ->
-    {Next, S1} = case waterlily_codec:unpack(Info) of
-        {final, Data, Rest} ->
-            case waterlily_response:decode(Data) of
+handle_info({tcp_error, Socket, Reason}, _StateName, #state{socket=Socket} =
+            State) ->
+    {stop, {tcp_error, Reason}, State};
+
+handle_info({tcp, Socket, Data}, connected, #state{socket=Socket}=State) ->
+    ok = inet:setopts(Socket, [{active, once}]),
+    {Next, S1} = case waterlily_codec:unpack(Data) of
+        {final, Unpacked, Rest} ->
+            case waterlily_response:decode(Unpacked) of
                 {error, _Error} ->
                     {disconnected, State#state{data=Rest}};
                 {redirect, Redirect} ->
-                    ?INFO("Redirect ~p~n", [Redirect]),
+                    ?INFO("Redirect ~p, do nothing~n", [Redirect]),
                     {connected, State#state{data=Rest}};
                 prompt ->
+                    % reply size set to unlimited
                     send_message(Socket, <<"Xreply_size -1">>),
                     send_message(Socket, <<"Xauto_commit 1">>),
                     send_message(Socket, <<"sSELECT 42;">>),
                     {ready, State#state{data=Rest}};
-                {unknown, Data} ->
+                {unknown, Auth} ->
                     [Salt, DBname | _Other] = 
-                        binary:split( Data, [<<":">>], [global]),
+                        binary:split( Auth, [<<":">>], [global]),
 
                     ?DEBUG("Got some dbname ~p~n", [DBname]),
                     ?DEBUG("Got some salt ~p~n", [Salt]),
@@ -141,17 +150,25 @@ handle_info({tcp, _Port, Info}, connected, #state{socket=Socket}=State) ->
     end,
     {next_state, Next, S1};
 
-handle_info({tcp, _Port, Info}, StateName, State) ->
-    S1 = case waterlily_codec:unpack(Info) of
-        {final, Data, Rest} ->
-            D = waterlily_response:decode(Data),
-            ?DEBUG("Got some info: ~n~p~n", [D]),
-            % response & = charAt(0)
+handle_info({tcp, Socket, Data}, ready,
+            #state{socket=Socket, caller=From} = State) ->
+    ok = inet:setopts(Socket, [{active, once}]),
+    S1 = case waterlily_codec:unpack(Data) of
+        {final, Unpacked, Rest} ->
+            D = waterlily_response:decode(Unpacked),
+            From ! D,
             State#state{data=Rest};
         {wait, M} ->
             State#state{message=M}
     end,
-    {next_state, StateName, S1}.
+    {next_state, ready, S1};
+
+handle_info({response, Response}, ready, State) ->
+    ?INFO("Got response ~p~n", [Response]),
+    {next_state, ready, State};
+handle_info(Info, StateName, State) ->
+    ?ERROR("Unknown info: ~p in state ~s~n", [Info, StateName]),
+    {stop, StateName, State}.
 
 terminate(_Reason, _StateName, _State) ->
     ok.
