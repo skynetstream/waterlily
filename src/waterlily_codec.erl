@@ -1,8 +1,8 @@
 -module(waterlily_codec).
 
--export([ encode/1
-        , decode/1
-        , decode/2
+-export([ pack/1
+        , unpack/1
+        , unpack/2
         ]).
 
 -include("waterlily.hrl").
@@ -13,62 +13,62 @@
 -type packet() :: <<_:16, _:_*8>>.
 
 
--spec encode(binary()) -> [binary()].
-encode(Message) when is_binary(Message) ->
-    encode_chunks(Message, []).
+-spec pack(binary()) -> [binary()].
+pack(Message) when is_binary(Message) ->
+    pack_chunks(Message, []).
 
--spec encode_chunks(binary(), list()) -> list().
-encode_chunks(<<>>, Chunks) ->
+-spec pack_chunks(binary(), list()) -> list().
+pack_chunks(<<>>, Chunks) ->
     lists:reverse(Chunks);
 
-encode_chunks(Content, Chunks) when size(Content) =< ?MAX_CONTENT_LENGTH ->
+pack_chunks(Content, Chunks) when size(Content) =< ?MAX_CONTENT_LENGTH ->
     Size = size(Content),
     <<Header:16>> = <<Size:15, 1:1>>,
-    encode_chunks(<<>>, [<<Header:16/little, Content/binary>> | Chunks]);
+    pack_chunks(<<>>, [<<Header:16/little, Content/binary>> | Chunks]);
 
-encode_chunks(<<Content:?MAX_CONTENT_LENGTH/binary, Rest/binary>>, Chunks) ->
+pack_chunks(<<Content:?MAX_CONTENT_LENGTH/binary, Rest/binary>>, Chunks) ->
     <<Header:16>> = <<?MAX_CONTENT_LENGTH:15, 0:1>>,
-    encode_chunks(Rest, [<<Header:16/little, Content/binary>> | Chunks]).
+    pack_chunks(Rest, [<<Header:16/little, Content/binary>> | Chunks]).
 
 
--spec decode(packet(), message()) ->
+-spec unpack(packet(), message()) ->
     {final, binary(), binary()} | {wait, message()}.
-decode(NewData, M) when is_binary(NewData) ->
-    decode(M#message{data=NewData}).
+unpack(NewData, M) when is_binary(NewData) ->
+    unpack(M#message{data=NewData}).
 
--spec decode(packet() | message()) ->
+-spec unpack(packet() | message()) ->
     {final, binary(), binary()} | {wait, message()}.
-decode(Data) when is_binary(Data) ->
-    decode(#message{data=Data});
+unpack(Data) when is_binary(Data) ->
+    unpack(#message{data=Data});
 
 % last chunk read, buffer is full, return message
-decode(#message{final=true, to_read=0, data=Data, buffer=Buffer}) ->
+unpack(#message{final=true, to_read=0, data=Data, buffer=Buffer}) ->
     {final, list_to_binary(lists:reverse(Buffer)), Data};
 
 % not last chunk, add to buffer, read again
-decode(#message{to_read=0, data=Data}=M) when size(Data) < 2 ->
+unpack(#message{to_read=0, data=Data}=M) when size(Data) < 2 ->
     {wait, M};
-decode(#message{final=false, to_read=0, data=Data, buffer=Buffer}) ->
-    M = decode_header(Data),
-    M1 = decode_chunk(M#message{buffer=Buffer}),
-    decode(M1);
+unpack(#message{final=false, to_read=0, data=Data, buffer=Buffer}) ->
+    M = unpack_header(Data),
+    M1 = unpack_chunk(M#message{buffer=Buffer}),
+    unpack(M1);
 
 % not enough data - we wait for more
-decode(#message{data= <<>>}=M) ->
+unpack(#message{data= <<>>}=M) ->
     {wait, M};
 
 % got new data to read
-decode(M) ->
-    decode(decode_chunk(M)).
+unpack(M) ->
+    unpack(unpack_chunk(M)).
 
--spec decode_header(packet()) -> message().
-decode_header(<<Header:16/little, Data/binary>>) ->
+-spec unpack_header(packet()) -> message().
+unpack_header(<<Header:16/little, Data/binary>>) ->
     ToRead = Header bsr 1,
     Final = (Header band 1) =:= 1,
     #message{final=Final, to_read=ToRead, data=Data}.
 
--spec decode_chunk(message()) -> message().
-decode_chunk(#message{ to_read=ToRead
+-spec unpack_chunk(message()) -> message().
+unpack_chunk(#message{ to_read=ToRead
                      , buffer=Buffer
                      , data=Data} = M) ->
     TR = min(ToRead, size(Data)),

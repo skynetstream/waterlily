@@ -28,9 +28,9 @@ t_single_message_codec(_Config) ->
 prop_single() ->
     ?FORALL(Message, bin(),
             begin
-                Encoded = waterlily_codec:encode(Message),
+                Encoded = waterlily_codec:pack(Message),
                 BinEncoded = list_to_binary(Encoded),
-                {final, Decoded, <<>>} = waterlily_codec:decode(BinEncoded),
+                {final, Decoded, <<>>} = waterlily_codec:unpack(BinEncoded),
                 Decoded =:= Message
             end).
 
@@ -40,13 +40,13 @@ t_multi_message_codec(_Config) ->
 prop_multi() ->
     ?FORALL(Messages, small_list(),
             begin
-                Encoded = [waterlily_codec:encode(M) || M <- Messages],
+                Encoded = [waterlily_codec:pack(M) || M <- Messages],
                 BinEncoded = list_to_binary(Encoded),
-                {final, Decoded1, Rest1} = waterlily_codec:decode(BinEncoded),
-                {final, Decoded2, Rest2} = waterlily_codec:decode(Rest1),
-                {final, Decoded3, <<>>} = waterlily_codec:decode(Rest2),
+                {final, Decoded1, Rest1} = waterlily_codec:unpack(BinEncoded),
+                {final, Decoded2, Rest2} = waterlily_codec:unpack(Rest1),
+                {final, Decoded3, <<>>} = waterlily_codec:unpack(Rest2),
                 Decoded = <<Decoded1/binary, Decoded2/binary, Decoded3/binary>>,
-                list_to_binary(Messages) =:= Decoded,
+                Decoded = list_to_binary(Messages), 
                 Messages =:= [Decoded1, Decoded2, Decoded3]
             end).
 
@@ -56,11 +56,11 @@ t_part_message(_Config) ->
 prop_part_message() ->
     ?FORALL({Message, CutOff}, {binary(100), integer(10, 90)} ,
             begin
-                Encoded = waterlily_codec:encode(Message),
+                Encoded = waterlily_codec:pack(Message),
                 BinEncoded = list_to_binary(Encoded),
                 <<M1:CutOff/binary, M2/binary>> = BinEncoded,
-                {wait, M} = waterlily_codec:decode(M1),
-                {final, Decoded, <<>>} = waterlily_codec:decode(M2, M),
+                {wait, M} = waterlily_codec:unpack(M1),
+                {final, Decoded, <<>>} = waterlily_codec:unpack(M2, M),
                 Message =:= Decoded
             end).
 

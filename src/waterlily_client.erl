@@ -101,7 +101,7 @@ handle_info({tcp_closed, _Port}, _StateName, State) ->
     {next_state, disconnected, State};
 
 handle_info({tcp, _Port, Info}, connected, #state{socket=Socket}=State) ->
-    {Next, S1} = case waterlily_codec:decode(Info) of
+    {Next, S1} = case waterlily_codec:unpack(Info) of
         {final, Data, Rest} ->
             case waterlily_response:decode(Data) of
                 {error, _Error} ->
@@ -142,7 +142,7 @@ handle_info({tcp, _Port, Info}, connected, #state{socket=Socket}=State) ->
     {next_state, Next, S1};
 
 handle_info({tcp, _Port, Info}, StateName, State) ->
-    S1 = case waterlily_codec:decode(Info) of
+    S1 = case waterlily_codec:unpack(Info) of
         {final, Data, Rest} ->
             D = waterlily_response:decode(Data),
             ?DEBUG("Got some info: ~n~p~n", [D]),
@@ -164,7 +164,7 @@ code_change(_OldVsn, StateName, State, _Extra) ->
 %%%===================================================================
 
 send_message(Socket, Message) ->
-    Encoded = waterlily_codec:encode(Message),
+    Encoded = waterlily_codec:pack(Message),
     gen_tcp:send(Socket, Encoded).
 
 bin_to_hex(Bin) ->
