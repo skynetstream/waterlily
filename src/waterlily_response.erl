@@ -5,7 +5,7 @@
 -include("waterlily.hrl").
 
 -define(REDIRECT,       "^").
--define(ERROR,          "!").
+-define(ERR,          "!").
 -define(PROMPT,         "").
 -define(QUERY,          "&").
 -define(SCHEMA_HEADER,  "%").
@@ -40,8 +40,8 @@
 -spec decode(binary()) -> response().
 decode(<<?REDIRECT, Redirect/binary>>) ->
     {redirect, Redirect};
-decode(<<?ERROR, Error/binary>>) ->
-    ?ERROR(Error),
+decode(<<?ERR, Error/binary>>) ->
+    ?ERROR(binary_to_list(Error)),
     {error, Error};
 decode(<<?PROMPT>>) ->
     prompt;
