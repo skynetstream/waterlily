@@ -29,6 +29,7 @@
             , port = 50000       :: inet:port()
             , socket             :: undefined | inet:socket()
             , keepalive = true   :: boolean()
+            , reconnect = true   :: boolean()
             , message            :: #message{}
             , data               :: binary()
             , caller             :: pid()
@@ -53,20 +54,38 @@ send(Message) ->
 %%%===================================================================
 
 init(_Opts) ->
-    State = #state{host=Host, port=Port, keepalive=Keepalive} = #state{},
-    ?DEBUG("Trying to connect to ~p:~p", [Host, Port]),
+    State = #state{host=Host, port=Port, keepalive=Keepalive,
+                   reconnect=Reconnect} = #state{},
+    case Reconnect of
+        true ->
+            try_connect(State);
+        false ->
+            {ok, disconnected, State}
+    end.
+
+try_connect(#state{host=Host, port=Port, keepalive=Keepalive,
+                   reconnect=Reconnect} = State) ->
     case gen_tcp:connect(Host, Port, [{keepalive, Keepalive} | ?TCP_OPTS]) of
-        {ok, Socket} ->
-            ?INFO("Connected to ~p:~p", [Host, Port]),
-            ok = inet:setopts(Socket, [{active, once}]),
-            State2 = State#state{socket = Socket, caller=self()},
-            {ok, connected, State2};
-        {error, Reason} = Error ->
-            ?ERROR("Cannot connect to ~p:~p: ~s", [Host, Port, Reason]),
-            {stop, Error}
+      {ok, Socket} ->
+          ?INFO("Connected to ~p:~p", [Host, Port]),
+          ok = inet:setopts(Socket, [{active, once}]),
+          State2 = State#state{socket = Socket, caller=self()},
+          {ok, connected, State2};
+      {error, Reason} ->
+          ?ERROR("Cannot connect to ~p:~p: ~s", [Host, Port, Reason]),
+          case Reconnect of
+              true ->
+                  gen_fsm:send_event_after(0, reconnect);
+              false ->
+                  ok
+          end,
+          {ok, disconnected, State}
     end.
 
 
+disconnected(reconnect, State) ->
+    {ok, NextState, State2} = try_connect(State),
+    {next_state, NextState, State2};
 disconnected(_Event, State) ->
     {next_state, disconnected, State}.
 
