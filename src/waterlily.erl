@@ -10,10 +10,13 @@
 %%====================================================================
 
 connect() ->
-    waterlily_client:start_link().
+    waterlily_client:start_link(fun print_response/1).
 
 send(Message) ->
     waterlily_client:send(Message).
+
+print_response(Response) ->
+    io:format("Response: ~n~p~n", [Response]).
 
 %%====================================================================
 %% Internal functions
