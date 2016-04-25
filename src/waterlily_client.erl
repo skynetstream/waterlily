@@ -3,8 +3,9 @@
 -behaviour(gen_fsm).
 
 %% API
--export([ start_link/0
+-export([ start_link/1
         , send/1
+        , connect/0
         ]).
 
 %% gen_fsm callbacks
@@ -32,7 +33,7 @@
             , reconnect = true   :: boolean()
             , message            :: #message{}
             , data               :: binary()
-            , caller             :: pid()
+            , handler            :: atom()
             }).
 
 -define(TCP_OPTS, [binary, {active, false}, {packet, raw}]).
@@ -41,25 +42,26 @@
 %%% API
 %%%===================================================================
 
-start_link() ->
-    gen_fsm:start_link({local, ?MODULE}, ?MODULE, [], []).
+start_link(ResponseHandler) ->
+    gen_fsm:start_link({local, ?MODULE}, ?MODULE, [ResponseHandler], []).
 
 send(Message) ->
-    Self = self(),
-    gen_fsm:send_event(?MODULE, {send, Self, Message}).
+    gen_fsm:send_event(?MODULE, {send, Message}).
 
+connect() ->
+    gen_fsm:send_event(?MODULE, reconnect).
 
 %%%===================================================================
 %%% gen_fsm callbacks
 %%%===================================================================
 
-init(_Opts) ->
-    State = #state{host=Host, port=Port, keepalive=Keepalive,
-                   reconnect=Reconnect} = #state{},
+init([ResponseHandler]) ->
+    State = #state{reconnect=Reconnect} = #state{message=#message{},
+                                                 handler=ResponseHandler},
     case Reconnect of
         true ->
             try_connect(State);
-        false ->
+        _ ->
             {ok, disconnected, State}
     end.
 
@@ -69,7 +71,7 @@ try_connect(#state{host=Host, port=Port, keepalive=Keepalive,
       {ok, Socket} ->
           ?INFO("Connected to ~p:~p", [Host, Port]),
           ok = inet:setopts(Socket, [{active, once}]),
-          State2 = State#state{socket = Socket, caller=self()},
+          State2 = State#state{socket = Socket},
           {ok, connected, State2};
       {error, Reason} ->
           ?ERROR("Cannot connect to ~p:~p: ~s", [Host, Port, Reason]),
@@ -93,6 +95,37 @@ disconnected(_Event, _From, State) ->
     Reply = ok,
     {reply, Reply, disconnected, State}.
 
+connected({error, Error}, State) ->
+    ?ERROR(binary_to_list(Error)),
+    {next_state, disconnected, State};
+connected({redirect, Redirect}, State) ->
+    ?INFO("Redirect ~p, do nothing~n", [Redirect]),
+    {next_state, connected, State};
+connected({unknown, Auth}, #state{socket=Socket} = State) ->
+    [Salt, DBname | _Other] =  binary:split( Auth, [<<":">>], [global]),
+
+    ?DEBUG("Salt ~p~n", [Salt]),
+    ?DEBUG("Dbname ~p~n", [DBname]),
+    Password = "monetdb",
+    Hash = crypto:hash(sha512,
+        [bin_to_hex(crypto:hash(sha512, Password)), Salt]),
+    BinHexHash = bin_to_hex(Hash),
+    % Format:
+    % LIT
+    % user
+    % {SHA512}hexhash
+    % language (sql)
+    % dbname (todo)
+    Response = <<"LIT:monetdb:{SHA512}",
+                 BinHexHash/binary, ":sql:voc:">>,
+    send_message(Socket, Response),
+    {next_state, connected, State};
+connected(prompt, #state{socket=Socket} = State) ->
+    % reply size set to unlimited
+    send_message(Socket, <<"Xreply_size -1">>),
+    send_message(Socket, <<"Xauto_commit 1">>),
+    {next_state, ready, State};
+  
 connected(_Event, State) ->
     {next_state, connected, State}.
 
@@ -100,10 +133,15 @@ connected(_Event, _From, State) ->
     Reply = ok,
     {reply, Reply, connected, State}.
 
-ready({send, From, Message}, #state{socket=Socket} = State) ->
+ready({send, Message}, #state{socket=Socket} = State) ->
     send_message(Socket, Message),
-    {next_state, ready, State#state{caller=From}};
-
+    {next_state, ready, State};
+ready({result, Result}, #state{handler=Handler} = State) ->
+    Handler(Result),
+    {next_state, ready, State};
+ready({error, Error}, State) ->
+    ?ERROR(binary_to_list(Error)),
+    {next_state, ready, State};
 ready(_Event, State) ->
     {next_state, ready, State}.
 
@@ -111,80 +149,32 @@ ready(_Event, _From, State) ->
     Reply = ok,
     {reply, Reply, ready, State}.
 
+
+
 handle_event(Event, StateName, State) ->
     ?DEBUG("Got some event ~p~n", [Event]),
     {next_state, StateName, State}.
 
 handle_sync_event(Event, _From, StateName, State) ->
-    ?DEBUG("Got some event ~p~n", [Event]),
+    ?DEBUG("Got some sync event ~p~n", [Event]),
     {reply, ok, StateName, State}.
 
 handle_info({tcp_closed, Socket}, _StateName, #state{socket=Socket} = State) ->
+    ?DEBUG("Got disconnected"),
+    gen_fsm:send_event_after(0, reconnect),
     {next_state, disconnected, State};
 
 handle_info({tcp_error, Socket, Reason}, _StateName, #state{socket=Socket} =
             State) ->
     {stop, {tcp_error, Reason}, State};
 
-handle_info({tcp, Socket, Data}, connected, #state{socket=Socket}=State) ->
+handle_info({tcp, Socket, Data}, StateName, #state{socket=Socket} = State) ->
+    {State1, Messages} = unpack(Data, State),
+    Messages1 = [waterlily_response:decode(M) || M <- Messages],
+    [gen_fsm:send_event(self(), M) || M <- Messages1],
     ok = inet:setopts(Socket, [{active, once}]),
-    {Next, S1} = case waterlily_codec:unpack(Data) of
-        {final, Unpacked, Rest} ->
-            case waterlily_response:decode(Unpacked) of
-                {error, _Error} ->
-                    {disconnected, State#state{data=Rest}};
-                {redirect, Redirect} ->
-                    ?INFO("Redirect ~p, do nothing~n", [Redirect]),
-                    {connected, State#state{data=Rest}};
-                prompt ->
-                    % reply size set to unlimited
-                    send_message(Socket, <<"Xreply_size -1">>),
-                    send_message(Socket, <<"Xauto_commit 1">>),
-                    send_message(Socket, <<"sSELECT 42;">>),
-                    {ready, State#state{data=Rest}};
-                {unknown, Auth} ->
-                    [Salt, DBname | _Other] = 
-                        binary:split( Auth, [<<":">>], [global]),
+    {next_state, StateName, State1};
 
-                    ?DEBUG("Got some dbname ~p~n", [DBname]),
-                    ?DEBUG("Got some salt ~p~n", [Salt]),
-
-                    Password = "monetdb",
-                    Hash = crypto:hash(sha512,
-                        [bin_to_hex(crypto:hash(sha512, Password)), Salt]),
-                    BinHexHash = bin_to_hex(Hash),
-                    % Format:
-                    % LIT
-                    % user
-                    % {SHA512}hexhash
-                    % language (sql)
-                    % dbname (todo)
-                    Response = <<"LIT:monetdb:{SHA512}",
-                                 BinHexHash/binary, ":sql:voc:">>,
-                    send_message(Socket, Response),
-                    {connected, State#state{data=Rest}}
-            end;
-        {wait, M} ->
-            {connected, State#state{message=M}}
-    end,
-    {next_state, Next, S1};
-
-handle_info({tcp, Socket, Data}, ready,
-            #state{socket=Socket, caller=From} = State) ->
-    ok = inet:setopts(Socket, [{active, once}]),
-    S1 = case waterlily_codec:unpack(Data) of
-        {final, Unpacked, Rest} ->
-            D = waterlily_response:decode(Unpacked),
-            From ! D,
-            State#state{data=Rest};
-        {wait, M} ->
-            State#state{message=M}
-    end,
-    {next_state, ready, S1};
-
-handle_info({response, Response}, ready, State) ->
-    ?INFO("Got response ~p~n", [Response]),
-    {next_state, ready, State};
 handle_info(Info, StateName, State) ->
     ?ERROR("Unknown info: ~p in state ~s~n", [Info, StateName]),
     {stop, StateName, State}.
@@ -198,6 +188,20 @@ code_change(_OldVsn, StateName, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
+
+unpack(Data, State) ->
+    unpack(Data, State, []).
+
+unpack(<<>>, State, Messages) ->
+    {State, lists:reverse(Messages)};
+unpack(Data, #state{message=Message} = State, Messages) ->
+    {Data1, Messages1, State1} = case waterlily_codec:unpack(Data, Message) of
+        {final, Unpacked, Rest} ->
+            {Rest, [Unpacked|Messages], State#state{message=#message{}}};
+        {wait, M} ->
+            {<<>>, Messages, State#state{message=M}}
+    end,
+    unpack(Data1, State1, Messages1).
 
 send_message(Socket, Message) ->
     Encoded = waterlily_codec:pack(Message),
