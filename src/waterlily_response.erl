@@ -41,7 +41,6 @@
 decode(<<?REDIRECT, Redirect/binary>>) ->
     {redirect, Redirect};
 decode(<<?ERR, Error/binary>>) ->
-    ?ERROR(binary_to_list(Error)),
     {error, Error};
 decode(<<?PROMPT>>) ->
     prompt;
