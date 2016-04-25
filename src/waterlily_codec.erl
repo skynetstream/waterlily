@@ -33,8 +33,8 @@ pack_chunks(<<Content:?MAX_CONTENT_LENGTH/binary, Rest/binary>>, Chunks) ->
 
 -spec unpack(packet(), message()) ->
     {final, binary(), binary()} | {wait, message()}.
-unpack(NewData, M) when is_binary(NewData) ->
-    unpack(M#message{data=NewData}).
+unpack(NewData, #message{data=Data} = M) when is_binary(NewData) ->
+    unpack(M#message{data = <<Data/binary, NewData/binary>>}).
 
 -spec unpack(packet() | message()) ->
     {final, binary(), binary()} | {wait, message()}.
