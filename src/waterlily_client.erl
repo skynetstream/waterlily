@@ -26,18 +26,19 @@
 -include("waterlily.hrl").
 
 -record(state,
-            { host = "localhost"       :: inet:host()
-            , port = 50000             :: inet:port()
+            { host                     :: inet:host()
+            , port                     :: inet:port()
+            , database                 :: string()
             , socket                   :: undefined | inet:socket()
             , keepalive = true         :: boolean()
-            , reconnect = true         :: boolean()
+            , reconnect                :: boolean()
             , message                  :: #message{}
             , data                     :: binary()
             , handler                  :: atom()
             , throttle_min = 0         :: non_neg_integer()
             , throttle_now = 0         :: non_neg_integer()
-            , throttle_by = fun pow2/1 :: fun()
-            , throttle_max = 120       :: non_neg_integer()
+            , throttle_by = pow2       :: atom()
+            , throttle_max = 120       :: non_neg_integer() | infinity
             }).
 
 -define(TCP_OPTS, [binary, {active, false}, {packet, raw}]).
@@ -82,9 +83,10 @@ try_connect(#state{host=Host, port=Port, keepalive=Keepalive,
           ?ERROR("Cannot connect to ~p:~p: ~s", [Host, Port, Reason]),
           State1 = case Reconnect of
               true ->
-                  NewThrottle = case TF(TN) > TMAX of
+                  CalculatedThrottle = waterlily_throttle:TF(TN),
+                  NewThrottle = case CalculatedThrottle > TMAX of
                       true -> TMAX;
-                      _ -> TF(TN)
+                      _ -> CalculatedThrottle
                   end,
                   ?DEBUG("Reconnecting after ~p~n", [NewThrottle]),
                   gen_fsm:send_event_after(NewThrottle * 1000, reconnect),
@@ -220,15 +222,3 @@ send_message(Socket, Message) ->
 bin_to_hex(Bin) ->
     B = [io_lib:format("~2.16.0b", [N]) || N <- binary_to_list(Bin)],
     list_to_binary(B).
-
-add1(Throttle) ->
-    Throttle + 1.
-
-pow2(0) -> 1;
-pow2(Throttle) ->
-    Throttle * 2.
-
-exp(0) -> 2;
-exp(1) -> 2;
-exp(Throttle) ->
-    Throttle * Throttle.
