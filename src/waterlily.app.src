@@ -6,7 +6,14 @@
    [kernel,
     stdlib
    ]},
-  {env,[]},
+  {env,[{host, "localhost"},
+        {port, 50000},
+        {database, "voc"},
+        {username, "monetdb"},
+        {password, "monetdb"},
+        {reconnect, true},
+        {keepalive, true}
+       ]},
   {modules, []},
 
   {contributors, []},

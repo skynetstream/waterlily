@@ -4,8 +4,8 @@
 
 %% API
 -export([ start_link/1
-        , send/1
-        , connect/0
+        , send/2
+        , connect/1
         ]).
 
 %% gen_fsm callbacks
@@ -50,19 +50,25 @@
 start_link(ResponseHandler) ->
     gen_fsm:start_link(?MODULE, [ResponseHandler], []).
 
-send(Message) ->
-    gen_fsm:send_event(?MODULE, {send, Message}).
+send(Pid, Message) ->
+    gen_fsm:send_event(Pid, {send, Message}).
 
-connect() ->
-    gen_fsm:send_event(?MODULE, reconnect).
+connect(Pid) ->
+    gen_fsm:send_event(Pid, reconnect).
 
 %%%===================================================================
 %%% gen_fsm callbacks
 %%%===================================================================
 
 init([ResponseHandler]) ->
-    State = #state{reconnect=Reconnect} = #state{message=#message{},
-                                                 handler=ResponseHandler},
+    Host      = waterlily:get_env(host),
+    Port      = waterlily:get_env(port),
+    Database  = waterlily:get_env(database),
+    Reconnect = waterlily:get_env(reconnect),
+    Keepalive = waterlily:get_env(keepalive),
+    State = #state{host=Host, port=Port, database=Database, message=#message{},
+                   reconnect=Reconnect, keepalive=Keepalive,
+                   handler=ResponseHandler},
     case Reconnect of
         true ->
             try_connect(State);
@@ -114,24 +120,24 @@ connected({error, Error}, State) ->
 connected({redirect, Redirect}, State) ->
     ?INFO("Redirect ~p, do nothing~n", [Redirect]),
     {next_state, connected, State};
-connected({unknown, Auth}, #state{socket=Socket} = State) ->
+connected({unknown, Auth}, #state{socket=Socket, database=Database} = State) ->
     [Salt, DBname | _Other] =  binary:split( Auth, [<<":">>], [global]),
 
     ?DEBUG("Salt ~p~n", [Salt]),
     ?DEBUG("Dbname ~p~n", [DBname]),
-    Password = "monetdb",
+    Username = waterlily:get_env(username),
+    Password = waterlily:get_env(password),
     Hash = crypto:hash(sha512,
         [bin_to_hex(crypto:hash(sha512, Password)), Salt]),
-    BinHexHash = bin_to_hex(Hash),
+    HexHash = bin_to_hex(Hash),
     % Format:
     % LIT
     % user
     % {SHA512}hexhash
     % language (sql)
-    % dbname (todo)
-    Response = <<"LIT:monetdb:{SHA512}",
-                 BinHexHash/binary, ":sql:voc:">>,
-    send_message(Socket, Response),
+    % dbname (voc)
+    Response = ["LIT:", Username, ":{SHA512}", HexHash, ":sql:", Database,":"],
+    send_message(Socket, list_to_binary(Response)),
     {next_state, connected, State};
 connected(prompt, #state{socket=Socket} = State) ->
     % reply size set to unlimited
