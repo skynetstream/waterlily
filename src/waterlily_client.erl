@@ -47,7 +47,7 @@
 %%%===================================================================
 
 start_link(ResponseHandler) ->
-    gen_fsm:start_link({local, ?MODULE}, ?MODULE, [ResponseHandler], []).
+    gen_fsm:start_link(?MODULE, [ResponseHandler], []).
 
 send(Message) ->
     gen_fsm:send_event(?MODULE, {send, Message}).
