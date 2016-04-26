@@ -1,3 +1,5 @@
+.PHONY: all shell ct clean deps
+
 all:
 	rebar3 compile
 
