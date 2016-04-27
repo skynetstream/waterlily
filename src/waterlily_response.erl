@@ -129,6 +129,8 @@ decode_rows(Rows) ->
 -spec decode_rows([binary()], [[any()]]) -> [[string()]].
 decode_rows([],Decoded) ->
     lists:reverse(Decoded);
+decode_rows([<<"=", Row/binary>> | Rows], Decoded) ->
+    decode_rows(Rows, [[Row] | Decoded]);
 decode_rows([<<"[ ", Row/binary>> |Rows], Decoded) ->
     RS = size(Row) - 1,
     <<Row1:RS/binary, _Rest/binary>> = Row,
