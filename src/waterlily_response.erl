@@ -5,7 +5,7 @@
 -include("waterlily.hrl").
 
 -define(REDIRECT,       "^").
--define(ERR,          "!").
+-define(ERR,            "!").
 -define(PROMPT,         "").
 -define(QUERY,          "&").
 -define(SCHEMA_HEADER,  "%").
