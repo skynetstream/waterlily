@@ -5,6 +5,10 @@
 %% API
 -export([ start_link/1
         , send/2
+        , pragma/2
+        , query/2
+        , prepare/2
+        , execute/3
         , connect/1
         ]).
 
@@ -52,6 +56,18 @@ start_link(ResponseHandler) ->
 
 send(Pid, Message) ->
     gen_fsm:send_event(Pid, {send, Message}).
+
+pragma(Pid, Message) ->
+    gen_fsm:send_event(Pid, {pragma, Message}).
+
+query(Pid, Message) ->
+    gen_fsm:send_event(Pid, {query, Message}).
+
+prepare(Pid, Query) ->
+    gen_fsm:send_event(Pid, {prepare, Query}).
+
+execute(Pid, QueryId, Params) ->
+    gen_fsm:send_event(Pid, {execute, QueryId, Params}).
 
 connect(Pid) ->
     gen_fsm:send_event(Pid, reconnect).
@@ -137,12 +153,13 @@ connected({unknown, Auth}, #state{socket=Socket, database=Database} = State) ->
     % language (sql)
     % dbname (voc)
     Response = ["LIT:", Username, ":{SHA512}", HexHash, ":sql:", Database,":"],
-    send_message(Socket, list_to_binary(Response)),
+    pack_and_send(Socket, {send, list_to_binary(Response)}),
     {next_state, connected, State};
 connected(prompt, #state{socket=Socket} = State) ->
     % reply size set to unlimited
-    send_message(Socket, <<"Xreply_size -1">>),
-    send_message(Socket, <<"Xauto_commit 1">>),
+    pack_and_send(Socket, {pragma, <<"reply_size -1">>}),
+    pack_and_send(Socket, {pragma, <<"auto_commit 1">>}),
+
     {next_state, ready, State};
   
 connected(_Event, State) ->
@@ -152,8 +169,20 @@ connected(_Event, _From, State) ->
     Reply = ok,
     {reply, Reply, connected, State}.
 
-ready({send, Message}, #state{socket=Socket} = State) ->
-    send_message(Socket, Message),
+ready({send, _}=Message, #state{socket=Socket} = State) ->
+    pack_and_send(Socket, Message),
+    {next_state, ready, State};
+ready({pragma, _}=Message, #state{socket=Socket} = State) ->
+    pack_and_send(Socket, Message),
+    {next_state, ready, State};
+ready({query, _}=Message, #state{socket=Socket} = State) ->
+    pack_and_send(Socket, Message),
+    {next_state, ready, State};
+ready({prepare, _}=Message, #state{socket=Socket} = State) ->
+    pack_and_send(Socket, Message),
+    {next_state, ready, State};
+ready({execute, _, _}=Message, #state{socket=Socket} = State) ->
+    pack_and_send(Socket, Message),
     {next_state, ready, State};
 ready({result, Result}, #state{handler=Handler} = State) ->
     Handler(Result),
@@ -221,8 +250,22 @@ unpack(Data, #state{message=Message} = State, Messages) ->
     end,
     unpack(Data1, State1, Messages1).
 
-send_message(Socket, Message) ->
-    Encoded = waterlily_codec:pack(Message),
+pack({send, Message}) ->
+    Message;
+pack({pragma, Message}) ->
+    <<"X", Message/binary>>;
+pack({query, Message}) ->
+    <<"s", Message/binary>>;
+pack({prepare, Message}) ->
+    <<"sPREPARE ", Message/binary>>;
+pack({execute, QueryId, Params}) ->
+    Params1 = waterlily_prepare:prepare(Params),
+    Q = ["sEXEC ", integer_to_list(QueryId), "(", Params1, ");"],
+    list_to_binary(Q).
+
+
+pack_and_send(Socket, Message) ->
+    Encoded = waterlily_codec:pack(pack(Message)),
     gen_tcp:send(Socket, Encoded).
 
 bin_to_hex(Bin) ->
