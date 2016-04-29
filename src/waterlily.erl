@@ -1,7 +1,8 @@
 -module('waterlily').
 
 %% API exports
--export([ connect/1
+-export([ connect/0
+        , connect/1
         , send/2
         , pragma/2
         , query/2
@@ -15,8 +16,13 @@
 %% API functions
 %%====================================================================
 
-connect(Fun) ->
-    waterlily_client:start_link(Fun).
+connect() ->
+    waterlily_client:start_link().
+connect(Handler) ->
+    waterlily_client:start_link(Handler).
+
+register_handler(Pid, Handler) ->
+    waterlily_client:register_handler(Pid, Handler).
 
 send(Pid, Message) ->
     waterlily_client:send(Pid, Message).

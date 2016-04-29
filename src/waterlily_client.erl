@@ -3,13 +3,15 @@
 -behaviour(gen_fsm).
 
 %% API
--export([ start_link/1
+-export([ start_link/0
+        , start_link/1
         , send/2
         , pragma/2
         , query/2
         , prepare/2
         , execute/3
         , connect/1
+        , register_handler/2
         ]).
 
 %% gen_fsm callbacks
@@ -50,7 +52,8 @@
 %%%===================================================================
 %%% API
 %%%===================================================================
-
+start_link() ->
+    gen_fsm:start_link(?MODULE, [], []).
 start_link(ResponseHandler) ->
     gen_fsm:start_link(?MODULE, [ResponseHandler], []).
 
@@ -72,10 +75,14 @@ execute(Pid, QueryId, Params) ->
 connect(Pid) ->
     gen_fsm:send_event(Pid, reconnect).
 
+register_handler(Pid, Handler) ->
+    gen_fsm:send_all_state_event(Pid, {register, Handler}).
+
 %%%===================================================================
 %%% gen_fsm callbacks
 %%%===================================================================
-
+init([]) ->
+    init([undefined]);
 init([ResponseHandler]) ->
     Host      = waterlily:get_env(host),
     Port      = waterlily:get_env(port),
@@ -185,7 +192,7 @@ ready({execute, _, _}=Message, #state{socket=Socket} = State) ->
     pack_and_send(Socket, Message),
     {next_state, ready, State};
 ready({result, Result}, #state{handler=Handler} = State) ->
-    Handler(Result),
+    handle(Result, Handler),
     {next_state, ready, State};
 ready({error, Error}, State) ->
     ?ERROR(binary_to_list(Error)),
@@ -198,6 +205,9 @@ ready(_Event, _From, State) ->
     {reply, Reply, ready, State}.
 
 
+handle_event({register, Handler}, StateName, State) ->
+    ?INFO("New handler registered"),
+    {next_state, StateName, State#state{handler=Handler}};
 handle_event(Event, StateName, State) ->
     ?DEBUG("Got some event ~p~n", [Event]),
     {next_state, StateName, State}.
@@ -235,6 +245,14 @@ code_change(_OldVsn, StateName, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
+
+handle(_Result, undefined) ->
+    ?DEBUG("No handler registered"),
+    ok;
+handle(Result, Handler) when is_function(Handler) ->
+    Handler(Result);
+handle(Result, {Mod, Fun}) when is_atom(Mod), is_atom(Fun) ->
+    Mod:Fun(Result).
 
 unpack(Data, State) ->
     unpack(Data, State, []).
