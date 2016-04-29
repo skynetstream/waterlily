@@ -6,4 +6,10 @@ An OTP library
 Build
 -----
 
-    $ rebar3 compile
+    $ make
+
+How to use
+----------
+
+    $ {ok, Pid} = waterlily:connect(fun(R) -> io:format("Response: ~p") end).
+    $ waterlily:query(Pid, <<"select * from schemas;">>).
