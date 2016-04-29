@@ -3,6 +3,7 @@
 %% API exports
 -export([ connect/0
         , connect/1
+        , register_handler/2
         , send/2
         , pragma/2
         , query/2
@@ -47,10 +48,5 @@ get_env(Var) ->
     {ok, Value} = application:get_env(waterlily, Var),
     Value.
 
-query_id({#{id:=Id},_,_} = Response) ->
+query_id({#{id:=Id},_,_} = _Response) ->
     Id.
-
-
-%%====================================================================
-%% Internal functions
-%%====================================================================

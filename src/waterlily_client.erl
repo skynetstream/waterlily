@@ -166,9 +166,8 @@ connected(prompt, #state{socket=Socket} = State) ->
     % reply size set to unlimited
     pack_and_send(Socket, {pragma, <<"reply_size -1">>}),
     pack_and_send(Socket, {pragma, <<"auto_commit 1">>}),
-
     {next_state, ready, State};
-  
+
 connected(_Event, State) ->
     {next_state, connected, State}.
 
