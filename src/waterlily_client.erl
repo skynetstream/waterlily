@@ -4,14 +4,12 @@
 
 %% API
 -export([ start_link/0
-        , start_link/1
         , send/2
         , pragma/2
         , query/2
         , prepare/2
         , execute/3
         , connect/1
-        , register_handler/2
         ]).
 
 %% gen_fsm callbacks
@@ -40,7 +38,7 @@
             , reconnect                :: boolean()
             , message                  :: #message{}
             , data                     :: binary()
-            , handler                  :: atom()
+            , handler                  :: {reference(), pid()}
             , throttle_min = 0         :: non_neg_integer()
             , throttle_now = 0         :: non_neg_integer()
             , throttle_by = pow2       :: atom()
@@ -48,50 +46,61 @@
             }).
 
 -define(TCP_OPTS, [binary, {active, false}, {packet, raw}]).
+-define(TIMEOUT, 10000).
 
 %%%===================================================================
 %%% API
 %%%===================================================================
 start_link() ->
     gen_fsm:start_link(?MODULE, [], []).
-start_link(ResponseHandler) ->
-    gen_fsm:start_link(?MODULE, [ResponseHandler], []).
 
 send(Pid, Message) ->
-    gen_fsm:send_event(Pid, {send, Message}).
+    send_and_wait(Pid, {send, Message}).
 
 pragma(Pid, Message) ->
-    gen_fsm:send_event(Pid, {pragma, Message}).
+    send_and_wait(Pid, {pragma, Message}).
 
 query(Pid, Message) ->
-    gen_fsm:send_event(Pid, {query, Message}).
+    send_and_wait(Pid, {query, Message}).
 
 prepare(Pid, Query) ->
-    gen_fsm:send_event(Pid, {prepare, Query}).
+    send_and_wait(Pid, {prepare, Query}).
 
 execute(Pid, QueryId, Params) ->
-    gen_fsm:send_event(Pid, {execute, QueryId, Params}).
+    send_and_wait(Pid, {execute, QueryId, Params}).
 
 connect(Pid) ->
     gen_fsm:send_event(Pid, reconnect).
 
-register_handler(Pid, Handler) ->
-    gen_fsm:send_all_state_event(Pid, {register, Handler}).
+%%%===================================================================
+%%% Helpers
+%%%===================================================================
+send_and_wait(Pid, Query) ->
+    Ref = make_ref(),
+    case gen_fsm:sync_send_event(Pid, {Ref, Query}) of
+        ok ->
+            receive
+                {Ref, Response} ->
+                    Response
+            after ?TIMEOUT ->
+                timeout
+            end;
+        {error, _Reason} = Error ->
+            Error
+    end.
+
 
 %%%===================================================================
 %%% gen_fsm callbacks
 %%%===================================================================
 init([]) ->
-    init([undefined]);
-init([ResponseHandler]) ->
     Host      = waterlily:get_env(host),
     Port      = waterlily:get_env(port),
     Database  = waterlily:get_env(database),
     Reconnect = waterlily:get_env(reconnect),
     Keepalive = waterlily:get_env(keepalive),
     State = #state{host=Host, port=Port, database=Database, message=#message{},
-                   reconnect=Reconnect, keepalive=Keepalive,
-                   handler=ResponseHandler},
+                   reconnect=Reconnect, keepalive=Keepalive},
     case Reconnect of
         true ->
             try_connect(State);
@@ -130,12 +139,12 @@ try_connect(#state{host=Host, port=Port, keepalive=Keepalive,
 disconnected(reconnect, State) ->
     {ok, NextState, State2} = try_connect(State),
     {next_state, NextState, State2};
-disconnected(_Event, State) ->
-    {next_state, disconnected, State}.
+disconnected(Event, State) ->
+    {stop, {no_handler, Event}, State}.
 
 disconnected(_Event, _From, State) ->
-    Reply = ok,
-    {reply, Reply, disconnected, State}.
+    {reply, not_connected, disconnected, State}.
+
 
 connected({error, Error}, State) ->
     ?ERROR(binary_to_list(Error)),
@@ -154,7 +163,7 @@ connected({unknown, Auth}, #state{socket=Socket, database=Database} = State) ->
         [bin_to_hex(crypto:hash(sha512, Password)), Salt]),
     HexHash = bin_to_hex(Hash),
     % Format:
-    % LIT
+    % LIT (endianess)
     % user
     % {SHA512}hexhash
     % language (sql)
@@ -168,28 +177,13 @@ connected(prompt, #state{socket=Socket} = State) ->
     pack_and_send(Socket, {pragma, <<"auto_commit 1">>}),
     {next_state, ready, State};
 
-connected(_Event, State) ->
-    {next_state, connected, State}.
+connected(Event, State) ->
+    {stop, {no_handler, Event}, State}.
 
-connected(_Event, _From, State) ->
-    Reply = ok,
-    {reply, Reply, connected, State}.
+connected(Event, _From, State) ->
+    {stop, {no_handler, Event}, State}.
 
-ready({send, _}=Message, #state{socket=Socket} = State) ->
-    pack_and_send(Socket, Message),
-    {next_state, ready, State};
-ready({pragma, _}=Message, #state{socket=Socket} = State) ->
-    pack_and_send(Socket, Message),
-    {next_state, ready, State};
-ready({query, _}=Message, #state{socket=Socket} = State) ->
-    pack_and_send(Socket, Message),
-    {next_state, ready, State};
-ready({prepare, _}=Message, #state{socket=Socket} = State) ->
-    pack_and_send(Socket, Message),
-    {next_state, ready, State};
-ready({execute, _, _}=Message, #state{socket=Socket} = State) ->
-    pack_and_send(Socket, Message),
-    {next_state, ready, State};
+
 ready({result, Result}, #state{handler=Handler} = State) ->
     handle(Result, Handler),
     {next_state, ready, State};
@@ -199,9 +193,12 @@ ready({error, Error}, State) ->
 ready(_Event, State) ->
     {next_state, ready, State}.
 
-ready(_Event, _From, State) ->
-    Reply = ok,
-    {reply, Reply, ready, State}.
+ready({Ref, Query}, {From, _}, #state{socket=Socket} = State) ->
+    PS = pack_and_send(Socket, Query),
+    {reply, PS, ready, State#state{handler={Ref, From}}};
+
+ready(Event, _From, State) ->
+    {stop, {no_handler, Event}, State}.
 
 
 handle_event({register, Handler}, StateName, State) ->
@@ -245,13 +242,8 @@ code_change(_OldVsn, StateName, State, _Extra) ->
 %%% Internal functions
 %%%===================================================================
 
-handle(_Result, undefined) ->
-    ?DEBUG("No handler registered"),
-    ok;
-handle(Result, Handler) when is_function(Handler) ->
-    Handler(Result);
-handle(Result, {Mod, Fun}) when is_atom(Mod), is_atom(Fun) ->
-    Mod:Fun(Result).
+handle(Result, {Ref, Pid}) ->
+    Pid ! {Ref,Result}.
 
 unpack(Data, State) ->
     unpack(Data, State, []).
