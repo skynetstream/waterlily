@@ -11,5 +11,5 @@ Build
 How to use
 ----------
 
-    $ {ok, Pid} = waterlily:connect(fun(R) -> io:format("Response: ~p") end).
-    $ waterlily:query(Pid, <<"select * from schemas;">>).
+    $ {ok, Pid} = waterlily:connect().
+    $ Respone = waterlily:query(Pid, <<"select * from schemas;">>).
