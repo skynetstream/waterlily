@@ -4,6 +4,7 @@
 
 %% API
 -export([ start_link/0
+        , start_link/5
         , send/2
         , pragma/2
         , query/2
@@ -33,9 +34,11 @@
             { host                     :: inet:host()
             , port                     :: inet:port()
             , database                 :: string()
+            , username                 :: string()
+            , password                 :: string()
             , socket                   :: undefined | inet:socket()
             , keepalive = true         :: boolean()
-            , reconnect                :: boolean()
+            , reconnect = true         :: boolean()
             , message                  :: #message{}
             , data                     :: binary()
             , handler                  :: {reference(), pid()}
@@ -53,6 +56,10 @@
 %%%===================================================================
 start_link() ->
     gen_fsm:start_link(?MODULE, [], []).
+
+start_link(Host, Port, Database, Username, Password) ->
+    gen_fsm:start_link(?MODULE, [Host, Port, Database, Username, Password],
+                       []).
 
 send(Pid, Message) ->
     send_and_wait(Pid, {send, Message}).
@@ -97,10 +104,14 @@ init([]) ->
     Host      = waterlily:get_env(host),
     Port      = waterlily:get_env(port),
     Database  = waterlily:get_env(database),
-    Reconnect = waterlily:get_env(reconnect),
-    Keepalive = waterlily:get_env(keepalive),
-    State = #state{host=Host, port=Port, database=Database, message=#message{},
-                   reconnect=Reconnect, keepalive=Keepalive},
+    Username  = waterlily:get_env(username),
+    Password  = waterlily:get_env(password),
+    init([Host, Port, Database, Username, Password]);
+init([Host, Port, Database, Username, Password]) ->
+    Host1 = normalize_host(Host),
+    State = #state{reconnect=Reconnect} 
+          = #state{host=Host1, port=Port, database=Database, 
+                   username=Username, password=Password, message=#message{}},
     case Reconnect of
         true ->
             try_connect(State);
@@ -152,13 +163,13 @@ connected({error, Error}, State) ->
 connected({redirect, Redirect}, State) ->
     ?INFO("Redirect ~p, do nothing~n", [Redirect]),
     {next_state, connected, State};
-connected({unknown, Auth}, #state{socket=Socket, database=Database} = State) ->
+connected({unknown, Auth},
+          #state{socket=Socket, database=Database,
+                username=Username, password=Password} = State) ->
     [Salt, DBname | _Other] =  binary:split( Auth, [<<":">>], [global]),
 
     ?DEBUG("Salt ~p~n", [Salt]),
     ?DEBUG("Dbname ~p~n", [DBname]),
-    Username = waterlily:get_env(username),
-    Password = waterlily:get_env(password),
     Hash = crypto:hash(sha512,
         [bin_to_hex(crypto:hash(sha512, Password)), Salt]),
     HexHash = bin_to_hex(Hash),
@@ -286,3 +297,8 @@ pack_and_send(Socket, Message) ->
 bin_to_hex(Bin) ->
     B = [io_lib:format("~2.16.0b", [N]) || N <- binary_to_list(Bin)],
     list_to_binary(B).
+
+normalize_host(Host) when is_binary(Host) ->
+    binary_to_list(Host);
+normalize_host(Host) ->
+    Host.

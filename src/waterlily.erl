@@ -2,6 +2,7 @@
 
 %% API exports
 -export([ connect/0
+        , connect/5
         , send/2
         , pragma/2
         , query/2
@@ -23,6 +24,9 @@
 
 connect() ->
     waterlily_client:start_link().
+
+connect(Host, Port, Database, Username, Password) ->
+    waterlily_client:start_link(Host, Port, Database, Username, Password).
 
 send(Pid, Message) ->
     waterlily_client:send(Pid, Message).
