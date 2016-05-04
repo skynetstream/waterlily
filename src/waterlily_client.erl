@@ -181,14 +181,20 @@ connected(Event, State) ->
     {stop, {no_handler, Event}, State}.
 
 connected(Event, _From, State) ->
-    {stop, {no_handler, Event}, State}.
+    {reply, {error, {no_handler, Event}}, connected, State}.
 
-
+ready(create, #state{handler=Handler} = State) ->
+    handle(ok, Handler),
+    {next_state, ready, State};
+ready({update, _RowsCount, _LastId} = Result, #state{handler=Handler} = State) ->
+    handle({ok, Result}, Handler),
+    {next_state, ready, State};
 ready({result, Result}, #state{handler=Handler} = State) ->
     handle(Result, Handler),
     {next_state, ready, State};
-ready({error, Error}, State) ->
-    ?ERROR(binary_to_list(Error)),
+ready({error, Reason} = Error, #state{handler=Handler} = State) ->
+    ?ERROR(binary_to_list(Reason)),
+    handle(Error, Handler),
     {next_state, ready, State};
 ready(_Event, State) ->
     {next_state, ready, State}.
@@ -198,7 +204,7 @@ ready({Ref, Query}, {From, _}, #state{socket=Socket} = State) ->
     {reply, PS, ready, State#state{handler={Ref, From}}};
 
 ready(Event, _From, State) ->
-    {stop, {no_handler, Event}, State}.
+    {stop, {error, {malformed_event, Event}}, State}.
 
 
 handle_event({register, Handler}, StateName, State) ->

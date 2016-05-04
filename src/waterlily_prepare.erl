@@ -41,6 +41,6 @@ to_string(Float) when is_float(Float) ->
 to_string(Bin) when is_binary(Bin) ->
     [$', binary_to_list(quote(Bin)), $'];
 to_string(List) when is_list(List) ->
-    [$'| quote(List)] ++ "'";
+    quote(List);
 to_string({json, JSON}) when is_binary(JSON)->
     "json '" ++ quote(binary_to_list(JSON)) ++ "'".

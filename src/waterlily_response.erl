@@ -18,13 +18,13 @@
 -define(PREPARE,        5).
 -define(BLOCK,          6).
 
--type id() :: non_neg_integer().
+-type id() :: -1 | non_neg_integer().
 -type header() :: map().
 -type col_info() :: map().
 -type query_result() :: {result, {header(), [col_info()], [any()]}}.
 -type query_response() :: query_result()
-                        | {update, id()}
-                        | {create, id()}
+                        | {update, non_neg_integer(), id()}
+                        | create
                         | transaction
                         | {block, id(), binary()}.
 
@@ -67,10 +67,10 @@ decode_header(<<?QUERY, Rest/binary>>) ->
 -spec decode_query([non_neg_integer()], [binary()]) -> query_response().
 decode_query([?TABLE|_]=Header, Lines) ->
     decode_table(Header, Lines);
-decode_query([?UPDATE, Id, _Rows, _Cols, _Index], _Lines) ->
-    {update, Id};
-decode_query([?CREATE, Id, _Rows, _Cols, _Index], _Lines) ->
-    {create, Id};
+decode_query([?UPDATE, RowsCount, LastId], _Lines) ->
+    {update, RowsCount, LastId};
+decode_query([?CREATE|_], _Lines) ->
+    create;
 decode_query([?TRANSACTION|_], _Lines) ->
     transaction;
 decode_query([?PREPARE|_]=Header, Lines) ->

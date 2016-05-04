@@ -54,7 +54,8 @@ t_decode_unknown(_Config) ->
 rand() ->
     rand(100).
 rand(Num) ->
-    crypto:rand_bytes(Num).
+    L = [crypto:rand_uniform($A, $z) || _N <- lists:seq(1, Num)],
+    list_to_binary(L).
 
 redirect(Rand) ->
     <<"^", Rand/binary>>.
