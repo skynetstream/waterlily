@@ -119,6 +119,12 @@ to_atom(<<"bigint">>) -> int;
 to_atom(<<"real">>) -> float;
 to_atom(<<"double">>) -> float;
 to_atom(<<"decimal">>) -> float;
+to_atom(<<"uuid">>) -> uuid;
+to_atom(<<"date">>) -> date;
+to_atom(<<"time">>) -> time;
+to_atom(<<"timetz">>) -> timetz;
+to_atom(<<"timestamp">>) -> timestamp;
+to_atom(<<"timestamptz">>) -> timestamptz;
 to_atom(_) -> binary.
 
 
@@ -205,6 +211,18 @@ type(R, int) ->
     list_to_integer(R);
 type(R, float) ->
     list_to_float(R);
+type(R, uuid) ->
+    {uuid, R};
+type(R, date) ->
+    {date, R};
+type(R, time) ->
+    {time, R};
+type(R, timetz) ->
+    {timetz, R};
+type(R, timestamp) ->
+    {timestamp, R};
+type(R, timestamptz) ->
+    {timestamptz, R};
 type(R, binary) ->
     R.
 
